@@ -1,6 +1,6 @@
 FROM python:3.9-slim-bullseye
 
-# Install system dependencies
+# Install core system dependencies
 RUN apt-get update && apt-get install -y \
     cmake \
     build-essential \
@@ -11,13 +11,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Upgrade pip first
+# Upgrade pip for better stability
 RUN pip install --upgrade pip
 
 COPY requirements.txt .
 
-# CRITICAL FIX: We set MAKEFLAGS to "-j1" to force the installer 
-# to use only 1 CPU core. This prevents the "8GiB Out of Memory" crash.
+# CRITICAL: We set MAKEFLAGS="-j1" to force single-core compilation.
+# This keeps RAM usage under 1GB and prevents the "8GiB Out of Memory" crash.
 RUN MAKEFLAGS="-j1" pip install --no-cache-dir -r requirements.txt
 
 COPY . .
