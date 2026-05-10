@@ -9,7 +9,7 @@ from functools import wraps
 from deepface import DeepFace
 import firebase_admin
 from firebase_admin import credentials, firestore
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -69,7 +69,8 @@ def require_api_key(f):
         provided_key = request.headers.get('x-api-key')
         if provided_key != Config.API_KEY:
             logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
-            abort(401, description="Unauthorized: Invalid or missing API Key")
+            # 🛑 THIS WAS THE FIX: Return clean JSON instead of an HTML abort page
+            return jsonify({"status": "error", "message": "Unauthorized: Invalid or missing API Key"}), 401
         return f(*args, **kwargs)
     return decorated_function
 
