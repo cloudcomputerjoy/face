@@ -17,10 +17,12 @@ from werkzeug.utils import secure_filename
 # 1. CORE CONFIGURATION & SECURITY
 # ==========================================
 class Config:
-    MODEL_NAME = "Facenet512"
-    SIMILARITY_THRESHOLD = float(os.environ.get('STRICTNESS_THRESHOLD', 0.82))
+    # 🚀 SFace is used to bypass the Render Free Tier 512MB RAM limit
+    MODEL_NAME = "SFace"
+    # 🚀 SFace mathematical threshold (0.65 is strict and accurate)
+    SIMILARITY_THRESHOLD = float(os.environ.get('STRICTNESS_THRESHOLD', 0.65))
     CACHE_TTL_SECONDS = 300
-    # Security: Require an API key to talk to this server
+    # 🛑 Security: Require an API key to talk to this server
     API_KEY = os.environ.get('API_KEY', 'AAU_ENTERPRISE_SECRET_2026') 
 
 app = Flask(__name__)
@@ -44,7 +46,7 @@ class MultipleFacesError(BiometricError): pass
 # ==========================================
 # 3. DATABASE CONNECTION
 # ==========================================
-def initialize_firestore() -> firestore.client:
+def initialize_firestore():
     try:
         cred_path = os.environ.get('FIREBASE_CREDENTIALS', '/etc/secrets/firebase-adminsdk.json')
         if not firebase_admin._apps:
@@ -63,13 +65,13 @@ registration_cache: Dict[str, Dict[str, Any]] = {}
 # 4. MIDDLEWARE & HELPERS
 # ==========================================
 def require_api_key(f):
-    """Decorator to enforce API Key authentication."""
+    """Decorator to enforce API Key authentication and block hackers."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         provided_key = request.headers.get('x-api-key')
         if provided_key != Config.API_KEY:
             logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
-            # 🛑 THIS WAS THE FIX: Return clean JSON instead of an HTML abort page
+            # Returns clean JSON to prevent ESP32 chunking crashes
             return jsonify({"status": "error", "message": "Unauthorized: Invalid or missing API Key"}), 401
         return f(*args, **kwargs)
     return decorated_function
@@ -93,7 +95,7 @@ def extract_embedding(image_bytes: bytes) -> List[float]:
     try:
         objs = DeepFace.represent(img, model_name=Config.MODEL_NAME, enforce_detection=True)
     except ValueError:
-        raise FaceNotFoundError("No face detected in the frame.")
+        raise FaceNotFoundError("No face detected in the frame. Step closer.")
 
     if len(objs) > 1:
         raise MultipleFacesError(f"Multiple faces detected ({len(objs)}). Frame must contain exactly one face.")
@@ -104,12 +106,12 @@ def extract_embedding(image_bytes: bytes) -> List[float]:
 # 5. API ROUTES
 # ==========================================
 @app.route('/health', methods=['GET'])
-def health_check() -> Tuple[Any, int]:
+def health_check():
     return jsonify({"status": "healthy", "service": "AAU Biometrics API", "timestamp": time.time()}), 200
 
 @app.route('/register', methods=['POST'])
 @require_api_key
-def register_user() -> Tuple[Any, int]:
+def register_user():
     try:
         manage_memory()
         
@@ -117,6 +119,7 @@ def register_user() -> Tuple[Any, int]:
         name = request.form.get('name', '').strip()
         user_id = secure_filename(request.form.get('id', '').strip()) # Prevents injection
         step = request.form.get('step')
+        department = request.form.get('department', 'N/A').strip()
         
         if not name or not user_id or 'image' not in request.files:
             return jsonify({"status": "error", "message": "Malformed request geometry."}), 400
@@ -124,7 +127,7 @@ def register_user() -> Tuple[Any, int]:
         try:
             embedding = extract_embedding(request.files['image'].read())
         except BiometricError as e:
-            return jsonify({"status": "error", "message": str(e)}), 422 # 422 Unprocessable Entity
+            return jsonify({"status": "error", "message": str(e)}), 200 
 
         # 3-Shot Aggregation Pipeline
         if step == '1' or user_id not in registration_cache:
@@ -139,23 +142,24 @@ def register_user() -> Tuple[Any, int]:
             db.collection('users').document(user_id).set({
                 'name': name,
                 'id': user_id,
-                'department': request.form.get('department', 'N/A').strip(),
+                'department': department,
                 'encoding': avg_embedding,
                 'created_at': firestore.SERVER_TIMESTAMP
             })
             del registration_cache[user_id]
             logger.info(f"✅ Identity Secured: {name} [{user_id}]")
-            return jsonify({"status": "success", "message": f"{name} successfully registered."}), 201
+            return jsonify({"status": "success", "message": f"{name} successfully registered."}), 200
 
-        return jsonify({"status": "progress", "message": f"Biometric frame {step}/3 processed."}), 202
+        return jsonify({"status": "progress", "message": f"Biometric frame {step}/3 processed."}), 200
 
     except Exception as e:
         logger.error(f"Registration fault: {e}", exc_info=True)
         return jsonify({"status": "error", "message": "Internal processing fault."}), 500
 
+
 @app.route('/verify', methods=['POST'])
 @require_api_key
-def verify_user() -> Tuple[Any, int]:
+def verify_user():
     try:
         if 'image' not in request.files:
             return jsonify({"status": "error", "message": "Payload missing image buffer."}), 400
@@ -163,7 +167,7 @@ def verify_user() -> Tuple[Any, int]:
         try:
             curr_enc = extract_embedding(request.files['image'].read())
         except BiometricError as e:
-            return jsonify({"status": "error", "message": str(e)}), 422
+            return jsonify({"status": "error", "message": str(e)}), 200
 
         # High-Speed Vector Matcher
         users_ref = db.collection('users').stream()
@@ -193,7 +197,7 @@ def verify_user() -> Tuple[Any, int]:
             return jsonify({"status": "success", "user": best_match['name'], "id": best_match['id']}), 200
         
         logger.warning(f"🔒 Access Denied. Highest match confidence: {highest_score:.4f}")
-        return jsonify({"status": "failed", "message": "Identity not recognized."}), 403
+        return jsonify({"status": "failed", "message": "Identity not recognized."}), 200
 
     except Exception as e:
         logger.error(f"Verification fault: {e}", exc_info=True)
